@@ -14,10 +14,11 @@ use events_enums::{EventType,EventReason};
 use widget_spec::{Widget, WidgetSpec};
 
 use k8s_openapi::api::core::v1::{Event, ObjectReference};
-use k8s_openapi::chrono::Utc;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
+use k8s_openapi::chrono::Utc;
 use kube::api::PostParams;
 use kube::core::ObjectMeta;
+use tracing::debug;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -27,17 +28,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = kube::Client::try_default().await?;
     let widgets_client: kube::Api<Widget> = kube::Api::namespaced(client.clone(), namespace);
     
-    let resource_version;
-    let uid;
+    let resource;
 
     match widgets_client.get_opt(resource_name).await? {
         Some(widget) => {
-            println!("Widget found {widget:?}");
-            uid = widget.metadata.uid.unwrap_or_default();
-            resource_version = widget.metadata.resource_version.unwrap_or_default();
+            debug!("Widget found {widget:?}");
+            resource = widget;
         },
         None => {
-            println!("Widget not found; creating one.");
+            debug!("Widget not found; creating one.");
             match widgets_client.create(
                 &PostParams::default(),
                 &Widget {
@@ -52,9 +51,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             ).await {
                 Ok(widget) => {
-                    println!("Created widget {widget:?}");
-                    uid = widget.metadata.uid.unwrap_or_default();
-                    resource_version = widget.metadata.resource_version.unwrap_or_default();
+                    debug!("Created widget {widget:?}");
+                    resource = widget;
                 },
                 Err(err) => {
                     panic!("Error creating widget due to {err}");
@@ -83,36 +81,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // This is metadata about the object for which the event is raised.
         involved_object: ObjectReference {
             api_version: Some(String::from("stable.example.com/v1")),
-            field_path: None,
             kind: Some(String::from("Widget")),
             namespace: Some(String::from(namespace)),
-            name: Some(String::from(resource_name)),
-            resource_version: Some(resource_version.clone()),
-            uid: Some(uid.clone()),
+            name: resource.metadata.name.clone(),
+            resource_version: resource.metadata.resource_version.clone(),
+            uid: resource.metadata.uid.clone(),
             ..Default::default()
         },
         // This is metadata about this event object.
         metadata: ObjectMeta {
             // This needs to be a unique name for the event, otherwise you'll get a 409 Conflict,
             // so we'll use the resource name and the number of nanoseconds since unix epoch time.
-            name: Some(format!("{}-{}", resource_name, utc_now.timestamp_nanos())),
+            name: Some(format!("{:?}-{}", resource.metadata.name.clone().unwrap(), utc_now.timestamp_nanos())),
             namespace: Some(String::from(namespace)),
             ..Default::default()
         },
     };
 
-    match events_client.create(
-        &PostParams {
-            dry_run: false,
-            ..Default::default()
-        },
-        &my_event
-    ).await {
+    match events_client.create(&PostParams::default(), &my_event).await {
         Ok(event) => {
-            println!("drw event logged {event:?}");
+            println!("event logged\n{event:#?}");
         },
         Err(err) =>{
-            eprintln!("error logging drw event: {err:?}");
+            panic!("error logging drw event: {err:?}");
         },
     };
 
