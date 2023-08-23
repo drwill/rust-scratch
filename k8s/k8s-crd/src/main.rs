@@ -7,87 +7,109 @@
     clippy::too_many_arguments
 )]
 
-use k8s_openapi::api::core::v1::{Event, EventSource, ObjectReference};
+pub mod events_enums;
+pub mod widget_spec;
+
+use events_enums::{EventType,EventReason};
+use widget_spec::{Widget, WidgetSpec};
+
+use k8s_openapi::api::core::v1::{Event, ObjectReference};
 use k8s_openapi::chrono::Utc;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
 use kube::api::PostParams;
 use kube::core::ObjectMeta;
-use uuid::Uuid;
-use strum::Display;
-
-#[derive(Debug, PartialEq, Display)]
-enum EventType {
-    Normal,
-    //Warning,
-}
-
-#[derive(Debug, PartialEq, Display)]
-enum EventReason {
-    Starting,
-    // Ready,
-    // Recovering,
-    // Healthy,
-    // Unhealthy,
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let namespace = "default";
+    let resource_name = "drw-widget1";
+    
     let client = kube::Client::try_default().await?;
+    let widgets_client: kube::Api<Widget> = kube::Api::namespaced(client.clone(), namespace);
+    
+    let resource_version;
+    let uid;
+
+    match widgets_client.get_opt(resource_name).await? {
+        Some(widget) => {
+            println!("Widget found {widget:?}");
+            uid = widget.metadata.uid.unwrap_or_default();
+            resource_version = widget.metadata.resource_version.unwrap_or_default();
+        },
+        None => {
+            println!("Widget not found; creating one.");
+            match widgets_client.create(
+                &PostParams::default(),
+                &Widget {
+                    metadata: ObjectMeta {
+                        name: Some(String::from(resource_name)),
+                        namespace: Some(String::from(namespace)),
+                        ..Default::default()
+                    },
+                    spec: WidgetSpec {
+                        age: Some(0),
+                    }
+                }
+            ).await {
+                Ok(widget) => {
+                    println!("Created widget {widget:?}");
+                    uid = widget.metadata.uid.unwrap_or_default();
+                    resource_version = widget.metadata.resource_version.unwrap_or_default();
+                },
+                Err(err) => {
+                    panic!("Error creating widget due to {err}");
+                }
+            };
+        }
+    }
+
     let events_client: kube::Api<Event> = kube::Api::default_namespaced(client);
 
-    let uuid = Uuid::new_v4();
-    let namespace = "default";
-    let resource_version = "1.0.0";
-    let pod_name = "drw-pod";
-
-    let my_event = Event {
+    let utc_now = Utc::now();
+    let my_event: Event = Event {
         type_: Some(String::from(EventType::Normal.to_string())),
-        action: Some(String::from("Ran sample")),
-        count: Some(1),
-        event_time: Some(MicroTime(Utc::now())),
-        first_timestamp: None,
-        last_timestamp: None,
-        reason: Some(String::from(EventReason::Starting.to_string())),
-        message: Some(String::from("drw event sample container started")),
-        related: None,
+        action: Some(String::from("Manipulated widget")),
+        event_time: Some(MicroTime(utc_now)),
+        reason: Some(String::from(EventReason::Unhealthy.to_string())),
+        message: Some(String::from("Widget crumbled.")),
         reporting_component: Some(String::from("drw-component")),
         reporting_instance: Some(String::from("k8s-crd")),
+        count: Some(1),
+        first_timestamp: None,
+        last_timestamp: None,
         series: None,
-        source: Some(EventSource {
-            component: Some(String::from("drw-component")),
-            host: Some(String::from("drw-host1")),
-        }),
+        source: None,
+        related: None,
+        // This is metadata about the object for which the event is raised.
         involved_object: ObjectReference {
-            api_version: Some(String::from("v1")),
+            api_version: Some(String::from("stable.example.com/v1")),
             field_path: None,
-            kind: Some(String::from("Pod")),
-            name: Some(String::from(pod_name)),
+            kind: Some(String::from("Widget")),
             namespace: Some(String::from(namespace)),
-            resource_version: Some(String::from(resource_version)),
-            uid: Some(String::from(uuid.to_string())),
+            name: Some(String::from(resource_name)),
+            resource_version: Some(resource_version.clone()),
+            uid: Some(uid.clone()),
+            ..Default::default()
         },
+        // This is metadata about this event object.
         metadata: ObjectMeta {
-            name: Some(String::from(pod_name)),
-            creation_timestamp: None,
-            annotations: None,
-            deletion_grace_period_seconds: None,
-            deletion_timestamp: None,
-            finalizers: None,
-            generate_name: None,
-            labels: None,
-            generation: None,
-            managed_fields: None,
+            // This needs to be a unique name for the event, otherwise you'll get a 409 Conflict,
+            // so we'll use the resource name and the number of nanoseconds since unix epoch time.
+            name: Some(format!("{}-{}", resource_name, utc_now.timestamp_nanos())),
             namespace: Some(String::from(namespace)),
-            owner_references: None,
-            resource_version: Some(String::from(resource_version)),
-            self_link: None,
-            uid: Some(String::from(uuid.to_string())),
+            ..Default::default()
         },
     };
 
-    match events_client.create(&PostParams::default(), &my_event).await {
-        Ok(_) => {
-            println!("drw event logged");
+    match events_client.create(
+        &PostParams {
+            dry_run: false,
+            ..Default::default()
+        },
+        &my_event
+    ).await {
+        Ok(event) => {
+            println!("drw event logged {event:?}");
         },
         Err(err) =>{
             eprintln!("error logging drw event: {err:?}");
