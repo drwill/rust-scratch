@@ -1,0 +1,6 @@
+apiVersion: "stable.example.com/v1"
+kind: Widget
+metadata:
+  name: drw-widget1
+spec:
+  age: 0
